@@ -11,6 +11,7 @@ const normalizeKey = (key) =>
         .toLowerCase()
         .replace(/[.\u0964:()\-_/]/g, '')
         .replace(/\s+/g, ' ')
+        .trim()
     : '';
 
 // Helper: get value from a row by trying multiple candidate headers (supports normalized exact and partial matches)
@@ -90,8 +91,43 @@ export const uploadExcelFile = async (req, res) => {
     }
 
     const worksheet = workbook.Sheets[sheetName];
-const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
 
+    // Auto-detect header row (handles files with title rows above headers)
+    const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+    const headerCandidates = [
+      ['नाव', 'नाम', 'name', 'full name', 'name of elector', 'elector name'],
+      ['अनु क्र', 'serial', 'sr no', 'क्रमांक'],
+      ['घर', 'house'],
+      ['लिंग', 'gender', 'sex'],
+      ['वय', 'age'],
+      ['मतदान', 'voter', 'epic', 'id card', 'elector photo identity'],
+      ['मोबाईल', 'mobile', 'phone', 'contact']
+    ];
+    const scoreRow = (cells = []) => {
+      const normCells = cells.map(normalizeKey);
+      let score = 0;
+      for (const group of headerCandidates) {
+        const found = group.some(tok => {
+          const nt = normalizeKey(tok);
+          return normCells.some(c => c && c.includes(nt));
+        });
+        if (found) score++;
+      }
+      return score;
+    };
+    let headerRowIndex = 0;
+    let bestScore = -1;
+    for (let i = 0; i < Math.min(rows.length, 20); i++) {
+      const s = scoreRow(rows[i] || []);
+      if (s > bestScore) {
+        bestScore = s;
+        headerRowIndex = i;
+      }
+    }
+
+    const jsonData = XLSX.utils.sheet_to_json(worksheet, { range: headerRowIndex, defval: '', raw: true });
+
+    console.log('Detected header row index:', headerRowIndex);
     console.log('Total rows found:', jsonData.length);
     console.log('First row sample:', jsonData[0] ? Object.keys(jsonData[0]) : 'No data');
 
@@ -108,16 +144,31 @@ const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
       if (!row || typeof row !== 'object') return null;
 
       const serialNumber = getVal(row, [
-        'अनु क्र.', 'अनु.क्र.', 'अनु क्रमांक', 'Serial Number', 'Serial No', 'Sr No', 'Sr Number', 'क्रमांक'
+        'अनु क्र.', 'अनु क्र', 'अनु क्र .', 'अनु.क्र.', 'अनु क्रमांक', 'Serial Number', 'Serial No', 'Sr No', 'Sr Number', 'क्रमांक'
       ]);
 
       const houseNumber = getVal(row, [
-        'घर क्र.', 'घर क्र', 'House Number', 'House No', 'घर नंबर', 'घर क्रमांक'
+        'घर क्र.', 'घर क्र', 'घर क्र .', 'House Number', 'House No', 'घर नंबर', 'घर क्रमांक'
       ]);
 
-      const name = getVal(row, [
-        'नाव', 'नाम', 'Name', 'Full Name'
-      ]) || `Unknown_${index}`;
+      // Name: support single-column and split variants (first/middle/last)
+      const firstName = getVal(row, [
+        'First Name', 'First', 'Given Name', 'Forename', 'FName', 'पहला नाम', 'प्रथम नाम'
+      ]);
+      const middleName = getVal(row, [
+        'Middle Name', 'Middle', 'MName', 'मध्य नाम'
+      ]);
+      const lastName = getVal(row, [
+        'Last Name', 'Last', 'Surname', 'Family Name', 'LName', 'उपनाम', 'सरनेम'
+      ]);
+      let name = getVal(row, [
+        'नाव', 'नाम', 'Name', 'Full Name', 'Name of Elector', 'Elector Name'
+      ]);
+      if (!name) {
+        const parts = [firstName, middleName, lastName].filter(Boolean).map(p => String(p).trim());
+        if (parts.length) name = parts.join(' ').trim();
+      }
+      if (!name) name = `Unknown_${index}`;
 
       const gender = getVal(row, [
         'लिंग', 'Gender', 'Sex'
@@ -130,14 +181,14 @@ const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
 
       const voterIdCard = getVal(row, [
         // Marathi/Hindi variants
-        'मतदान कार्ड क्र.', 'मतदान कार्ड क्र', 'मतदान कार्ड क्रमांक', 'मतदार ओळखपत्र', 'मतदार ओळखपत्र क्र.', 'मतदार ओळख क्रमांक',
+        'मतदान कार्ड क्र.', 'मतदान कार्ड क्र', 'मतदान कार्ड क्र .', 'मतदान कार्ड क्रमांक', 'मतदार ओळखपत्र', 'मतदार ओळखपत्र क्र.', 'मतदार ओळख क्रमांक',
         // English variants
         'Voter ID', 'Voter ID No', 'Voter ID Number', 'Voter Id Card', 'Voter Id Card No', 'Voter Card Number', 'VoterCard No', 'VoterID',
         'EPIC No', 'EPIC Number', 'EPIC', 'Elector Photo Identity Card No', 'ID Card No', 'IDCard No', 'ID Card Number'
       ]);
 
       const mobileNumber = getVal(row, [
-        'मोबाईल नं.', 'मोबाईल', 'Mobile Number', 'Mobile No', 'Phone', 'Phone Number', 'Contact', 'Contact Number'
+        'मोबाईल नं.', 'मोबाईल नं .', 'मोबाईल', 'Mobile Number', 'Mobile No', 'Phone', 'Phone Number', 'Contact', 'Contact Number'
       ]);
 
       const transformedRow = { serialNumber, houseNumber, name, gender, age, voterIdCard, mobileNumber };
