@@ -12,7 +12,7 @@ STEP 2: Add Environment Variable
    
    Key: MONGODB_URI
    
-   Value: mongodb+srv://hosteluser:hostuser@cluster0.ezzkjmw.mongodb.net/voterlist?retryWrites=true&w=majority&appName=Cluster0
+   Value: mongodb+srv://Voterlist1:test12345@cluster0.ezzkjmw.mongodb.net/voterlist?retryWrites=true&w=majority&appName=Cluster0
    
    Environment: ✅ Production ✅ Preview ✅ Development
    

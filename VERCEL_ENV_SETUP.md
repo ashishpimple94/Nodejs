@@ -17,7 +17,7 @@
    - **Key**: `MONGODB_URI`
    - **Value**: 
      ```
-     mongodb+srv://hosteluser:hostuser@cluster0.ezzkjmw.mongodb.net/voterlist?retryWrites=true&w=majority&appName=Cluster0
+     mongodb+srv://Voterlist1:test12345@cluster0.ezzkjmw.mongodb.net/voterlist?retryWrites=true&w=majority&appName=Cluster0
      ```
    - **Environment**: 
      - ✅ Production
@@ -54,13 +54,13 @@
 
 ### Full Connection String:
 ```
-mongodb+srv://hosteluser:hostuser@cluster0.ezzkjmw.mongodb.net/voterlist?retryWrites=true&w=majority&appName=Cluster0
+mongodb+srv://Voterlist1:test12345@cluster0.ezzkjmw.mongodb.net/voterlist?retryWrites=true&w=majority&appName=Cluster0
 ```
 
 ### Breakdown:
 - **Protocol**: `mongodb+srv://`
-- **Username**: `hosteluser`
-- **Password**: `hostuser`
+- **Username**: `Voterlist1`
+- **Password**: `test12345`
 - **Cluster**: `cluster0.ezzkjmw.mongodb.net`
 - **Database**: `voterlist`
 - **Options**: `retryWrites=true&w=majority&appName=Cluster0`

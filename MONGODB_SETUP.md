@@ -3,7 +3,7 @@
 ## Connection String
 
 ```
-mongodb+srv://hosteluser:hostuser@cluster0.ezzkjmw.mongodb.net/?appName=Cluster0
+mongodb+srv://Voterlist1:test12345@cluster0.ezzkjmw.mongodb.net/voterlist?retryWrites=true&w=majority&appName=Cluster0
 ```
 
 ## Vercel Environment Variable Setup
@@ -24,14 +24,14 @@ mongodb+srv://hosteluser:hostuser@cluster0.ezzkjmw.mongodb.net/?appName=Cluster0
 Add a database name to the connection string:
 
 **Key**: `MONGODB_URI`
-**Value**: `mongodb+srv://hosteluser:hostuser@cluster0.ezzkjmw.mongodb.net/voterlist?retryWrites=true&w=majority&appName=Cluster0`
+**Value**: `mongodb+srv://Voterlist1:test12345@cluster0.ezzkjmw.mongodb.net/voterlist?retryWrites=true&w=majority&appName=Cluster0`
 
 ## Local Development (.env file)
 
 Create a `.env` file in the `xcel` directory:
 
 ```env
-MONGODB_URI=mongodb+srv://hosteluser:hostuser@cluster0.ezzkjmw.mongodb.net/voterlist?retryWrites=true&w=majority&appName=Cluster0
+MONGODB_URI=mongodb+srv://Voterlist1:test12345@cluster0.ezzkjmw.mongodb.net/voterlist?retryWrites=true&w=majority&appName=Cluster0
 MAX_FILE_SIZE_MB=25
 NODE_ENV=development
 ```
@@ -46,8 +46,8 @@ NODE_ENV=development
    - Or add Vercel IP ranges if you want to restrict
 
 ### Database User
-- Username: `hosteluser`
-- Password: `hostuser`
+- Username: `Voterlist1`
+- Password: `test12345`
 - Make sure user has read/write permissions
 
 ## Verify Connection
