@@ -2,6 +2,8 @@
 import XLSX from 'xlsx';
 import VoterData from '../models/VoterData.js';
 import fs from 'fs';
+import { processVoterName, processGender, isMarathiText } from '../utils/transliteration.js';
+import { isVercel } from '../middleware/upload.js';
 
 // Helper: normalize header keys for robust matching (trim, lowercase, remove dots/punctuations, collapse spaces)
 const normalizeKey = (key) =>
@@ -18,6 +20,41 @@ const normalizeKey = (key) =>
 const getVal = (row, candidates = []) => {
   if (!row || typeof row !== 'object') return '';
 
+  // First try exact match (case-insensitive, preserve spaces but ignore trailing/leading)
+  for (const cand of candidates) {
+    for (const [k, v] of Object.entries(row)) {
+      if (v == null || v === '') continue;
+      
+      // Exact match (case-insensitive, trim)
+      const keyTrimmed = String(k).trim();
+      const candTrimmed = String(cand).trim();
+      
+      if (keyTrimmed.toLowerCase() === candTrimmed.toLowerCase()) {
+        return String(v).trim();
+      }
+      
+      // Match ignoring case and extra spaces
+      if (keyTrimmed.replace(/\s+/g, ' ').toLowerCase() === candTrimmed.replace(/\s+/g, ' ').toLowerCase()) {
+        return String(v).trim();
+      }
+    }
+  }
+
+  // Second: try with underscores/spaces normalized (SR_NO = SR NO = sr no)
+  for (const cand of candidates) {
+    for (const [k, v] of Object.entries(row)) {
+      if (v == null || v === '') continue;
+      
+      const keyNormalized = String(k).trim().toLowerCase().replace(/[\s_]/g, '');
+      const candNormalized = String(cand).trim().toLowerCase().replace(/[\s_]/g, '');
+      
+      if (keyNormalized === candNormalized) {
+        return String(v).trim();
+      }
+    }
+  }
+
+  // Third: try normalized match (remove special chars)
   const normRow = {};
   for (const [k, v] of Object.entries(row)) {
     normRow[normalizeKey(k)] = v;
@@ -26,16 +63,16 @@ const getVal = (row, candidates = []) => {
   for (const cand of candidates) {
     const normCand = normalizeKey(cand);
     if (normCand in normRow && normRow[normCand] != null && normRow[normCand] !== '') {
-      return normRow[normCand];
+      return String(normRow[normCand]).trim();
     }
   }
 
-  // fallback: partial match by contains for flexible headers like EPIC, voter, id, card, etc.
+  // Fourth: partial match by contains for flexible headers
   const flexible = candidates.map((c) => normalizeKey(c));
   for (const [k, v] of Object.entries(normRow)) {
     if (v == null || v === '') continue;
     for (const f of flexible) {
-      if (f && k.includes(f)) return v;
+      if (f && k.includes(f)) return String(v).trim();
     }
   }
 
@@ -50,32 +87,48 @@ export const uploadExcelFile = async (req, res) => {
     if (!req.file) {
       return res.status(400).json({
         success: false,
-        message: 'कृपया Excel फाइल अपलोड करें। फील्ड नाम "file" का उपयोग करें',
+        message: 'Please upload an Excel file. Use field name "file"',
+        message_mr: 'कृपया Excel फाइल अपलोड करें। फील्ड नाम "file" का उपयोग करें',
       });
     }
 
     console.log(`Processing: ${req.file.originalname}`);
-    console.log(`File path: ${req.file.path}`);
     console.log(`File size: ${req.file.size} bytes`);
+    console.log(`Storage type: ${isVercel ? 'memory (Vercel)' : 'disk (local)'}`);
 
-    // Check if file exists
-    if (!fs.existsSync(req.file.path)) {
-      return res.status(400).json({
-        success: false,
-        message: 'अपलोड की गई फाइल नहीं मिली',
-      });
-    }
-
-    // Read Excel file
+    // Read Excel file - handle both memory storage (Vercel) and disk storage (local)
     let workbook;
     try {
-      workbook = XLSX.readFile(req.file.path);
+      if (isVercel && req.file.buffer) {
+        // Vercel serverless: read from buffer (memory storage)
+        console.log('Reading Excel from buffer (memory storage)');
+        workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+      } else {
+        // Local development: read from file path (disk storage)
+        console.log(`Reading Excel from file path: ${req.file.path}`);
+        if (!fs.existsSync(req.file.path)) {
+          return res.status(400).json({
+            success: false,
+            message: 'Uploaded file not found',
+            message_mr: 'अपलोड की गई फाइल नहीं मिली',
+          });
+        }
+        workbook = XLSX.readFile(req.file.path);
+      }
     } catch (xlsxError) {
       console.error('XLSX read error:', xlsxError);
-      fs.unlinkSync(req.file.path);
+      // Cleanup uploaded file (only for disk storage)
+      if (!isVercel && req.file.path && fs.existsSync(req.file.path)) {
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch (cleanupError) {
+          console.warn('File cleanup error (non-critical):', cleanupError.message);
+        }
+      }
       return res.status(400).json({
         success: false,
-        message: 'अमान्य Excel फाइल फॉर्मेट',
+        message: 'Invalid Excel file format',
+        message_mr: 'अमान्य Excel फाइल फॉर्मेट',
         error: xlsxError.message
       });
     }
@@ -83,10 +136,18 @@ export const uploadExcelFile = async (req, res) => {
     const sheetName = workbook.SheetNames[0];
 
     if (!sheetName) {
-      fs.unlinkSync(req.file.path);
+      // Cleanup uploaded file (only for disk storage)
+      if (!isVercel && req.file.path && fs.existsSync(req.file.path)) {
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch (cleanupError) {
+          console.warn('File cleanup error (non-critical):', cleanupError.message);
+        }
+      }
       return res.status(400).json({
         success: false,
-        message: 'Excel फाइल खाली है या कोई शीट नहीं है',
+        message: 'Excel file is empty or has no sheets',
+        message_mr: 'Excel फाइल खाली है या कोई शीट नहीं है',
       });
     }
 
@@ -95,13 +156,13 @@ export const uploadExcelFile = async (req, res) => {
     // Auto-detect header row (handles files with title rows above headers)
     const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
     const headerCandidates = [
-      ['नाव', 'नाम', 'name', 'full name', 'name of elector', 'elector name'],
-      ['अनु क्र', 'serial', 'sr no', 'क्रमांक'],
-      ['घर', 'house'],
-      ['लिंग', 'gender', 'sex'],
+      ['नाव', 'नाम', 'name', 'full name', 'name of elector', 'elector name', 'name english', 'name marathi', 'name_en', 'name_mr', 'name_english', 'name_marathi'],
+      ['अनु क्र', 'serial', 'sr no', 'क्रमांक', 'sr_no', 'sr_no', 'serial_number'],
+      ['घर', 'house', 'house_no', 'house_number', 'house_no'],
+      ['लिंग', 'gender', 'sex', 'gender_en', 'gender_mr', 'gender_english', 'gender_marathi'],
       ['वय', 'age'],
-      ['मतदान', 'voter', 'epic', 'id card', 'elector photo identity'],
-      ['मोबाईल', 'mobile', 'phone', 'contact']
+      ['मतदान', 'voter', 'epic', 'id card', 'elector photo identity', 'epic_id', 'epic_id', 'voter_id'],
+      ['मोबाईल', 'mobile', 'phone', 'contact', 'mobile_no', 'mobile_number']
     ];
     const scoreRow = (cells = []) => {
       const normCells = cells.map(normalizeKey);
@@ -129,13 +190,44 @@ export const uploadExcelFile = async (req, res) => {
 
     console.log('Detected header row index:', headerRowIndex);
     console.log('Total rows found:', jsonData.length);
-    console.log('First row sample:', jsonData[0] ? Object.keys(jsonData[0]) : 'No data');
+    console.log('First row sample keys:', jsonData[0] ? Object.keys(jsonData[0]) : 'No data');
+    
+    // Debug: Show first row actual values
+    if (jsonData.length > 0) {
+      console.log('First row actual values:', JSON.stringify(jsonData[0], null, 2));
+      console.log('First row Name_En:', jsonData[0]['Name_En']);
+      console.log('First row Name_Mr:', jsonData[0]['Name_Mr']);
+      console.log('First row Gender_En:', jsonData[0]['Gender_En']);
+      console.log('First row Gender_Mr:', jsonData[0]['Gender_Mr']);
+    }
+
+    // Get all field names from the detected header row
+    const headerRow = rows[headerRowIndex] || [];
+    const fieldNames = jsonData.length > 0 ? Object.keys(jsonData[0]) : headerRow.filter(h => h);
+    
+    // Create field information
+    const fieldsInfo = {
+      detectedHeaderRow: headerRowIndex,
+      totalColumns: fieldNames.length,
+      columnNames: fieldNames,
+      headerRow: headerRow,
+      sampleRow: jsonData.length > 0 ? jsonData[0] : null,
+      allRows: jsonData.slice(0, 10) // First 10 rows as sample
+    };
 
     if (jsonData.length === 0) {
-      fs.unlinkSync(req.file.path);
+      // Cleanup uploaded file (only for disk storage)
+      if (!isVercel && req.file.path && fs.existsSync(req.file.path)) {
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch (cleanupError) {
+          console.warn('File cleanup error (non-critical):', cleanupError.message);
+        }
+      }
       return res.status(400).json({
         success: false,
-        message: 'Excel फाइल खाली है',
+        message: 'Excel file is empty',
+        message_mr: 'Excel फाइल खाली है',
       });
     }
 
@@ -143,61 +235,378 @@ export const uploadExcelFile = async (req, res) => {
     const voterDataArray = jsonData.map((row, index) => {
       if (!row || typeof row !== 'object') return null;
 
-      const serialNumber = getVal(row, [
-        'अनु क्र.', 'अनु क्र', 'अनु क्र .', 'अनु.क्र.', 'अनु क्रमांक', 'Serial Number', 'Serial No', 'Sr No', 'Sr Number', 'क्रमांक'
-      ]);
-
-      const houseNumber = getVal(row, [
-        'घर क्र.', 'घर क्र', 'घर क्र .', 'House Number', 'House No', 'घर नंबर', 'घर क्रमांक'
-      ]);
-
-      // Name: support single-column and split variants (first/middle/last)
-      const firstName = getVal(row, [
-        'First Name', 'First', 'Given Name', 'Forename', 'FName', 'पहला नाम', 'प्रथम नाम'
-      ]);
-      const middleName = getVal(row, [
-        'Middle Name', 'Middle', 'MName', 'मध्य नाम'
-      ]);
-      const lastName = getVal(row, [
-        'Last Name', 'Last', 'Surname', 'Family Name', 'LName', 'उपनाम', 'सरनेम'
-      ]);
-      let name = getVal(row, [
-        'नाव', 'नाम', 'Name', 'Full Name', 'Name of Elector', 'Elector Name'
-      ]);
-      if (!name) {
-        const parts = [firstName, middleName, lastName].filter(Boolean).map(p => String(p).trim());
-        if (parts.length) name = parts.join(' ').trim();
+      // Debug: Log first row to see actual field names
+      if (index === 0) {
+        console.log('\n=== FIRST ROW FIELD NAMES (DEBUG) ===');
+        const actualKeys = Object.keys(row);
+        console.log('Total keys found:', actualKeys.length);
+        console.log('Actual keys in Excel:', actualKeys);
+        console.log('\n--- All field values ---');
+        
+        // Try direct access with various formats
+        for (const key of actualKeys) {
+          const val = row[key];
+          console.log(`"${key}" = "${val}" (type: ${typeof val})`);
+        }
+        
+        console.log('\n--- Field detection test ---');
+        // Test all possible variations
+        const testFields = ['SR_NO', 'SR NO', 'House_No', 'House No', 'Name_En', 'Name En', 'Name_Mr', 'Name Mr', 
+                           'Gender_En', 'Gender En', 'Gender_Mr', 'Gender Mr', 'Epic_id', 'Epic id', 'Mobile_No', 'Mobile No', 'Age'];
+        for (const field of testFields) {
+          const found = row[field] !== undefined ? row[field] : 'NOT FOUND';
+          if (found !== 'NOT FOUND') {
+            console.log(`✅ "${field}" = "${found}"`);
+          }
+        }
+        
+        // Check case-insensitive matches
+        console.log('\n--- Case-insensitive matches ---');
+        const rowKeysLower = actualKeys.map(k => k.toLowerCase().replace(/[\s_]/g, ''));
+        const testFieldsLower = testFields.map(f => f.toLowerCase().replace(/[\s_]/g, ''));
+        for (let i = 0; i < testFields.length; i++) {
+          const fieldLower = testFieldsLower[i];
+          const idx = rowKeysLower.indexOf(fieldLower);
+          if (idx !== -1) {
+            const actualKey = actualKeys[idx];
+            console.log(`✅ "${testFields[i]}" matches "${actualKey}" = "${row[actualKey]}"`);
+          }
+        }
+        
+        console.log('=====================================\n');
       }
-      if (!name) name = `Unknown_${index}`;
 
-      const gender = getVal(row, [
-        'लिंग', 'Gender', 'Sex'
-      ]);
+      // Helper: Direct field access with case-insensitive matching
+      const getField = (row, possibleNames) => {
+        if (!row || typeof row !== 'object') return '';
+        
+        // First try exact match (case-sensitive, exact string match)
+        for (const name of possibleNames) {
+          if (row.hasOwnProperty(name)) {
+            const val = row[name];
+            if (val !== undefined && val !== null) {
+              const trimmed = String(val).trim();
+              // Return even if empty string (let caller handle empty)
+              return trimmed;
+            }
+          }
+        }
+        
+        // Then try case-insensitive match with underscore/space normalization
+        const rowKeys = Object.keys(row);
+        for (const name of possibleNames) {
+          // Normalize: remove spaces, underscores, convert to lowercase
+          const nameNormalized = name.toLowerCase().trim().replace(/[\s_]/g, '');
+          for (const key of rowKeys) {
+            const keyNormalized = key.toLowerCase().trim().replace(/[\s_]/g, '');
+            if (keyNormalized === nameNormalized) {
+              const val = row[key];
+              if (val !== undefined && val !== null) {
+                const trimmed = String(val).trim();
+                return trimmed;
+              }
+            }
+          }
+        }
+        
+        // Try with just spaces removed (not underscores)
+        for (const name of possibleNames) {
+          const nameNormalized = name.toLowerCase().trim().replace(/\s+/g, '');
+          for (const key of rowKeys) {
+            const keyNormalized = key.toLowerCase().trim().replace(/\s+/g, '');
+            if (keyNormalized === nameNormalized) {
+              const val = row[key];
+              if (val !== undefined && val !== null) {
+                const trimmed = String(val).trim();
+                return trimmed;
+              }
+            }
+          }
+        }
+        
+        // Last resort: use getVal function
+        return getVal(row, possibleNames);
+      };
 
-      const ageRaw = getVal(row, [
-        'वय', 'Age'
+      // Priority order: DIRECT ACCESS FIRST for exact Excel column names
+      // Note: SR_NO can have spaces like "1 / 1"
+      let serialNumber = '';
+      if (row['SR_NO'] !== undefined && row['SR_NO'] !== null) {
+        serialNumber = String(row['SR_NO']).trim();
+      }
+      if (!serialNumber) {
+        serialNumber = getField(row, [
+          'SR_NO', 'SR NO', 'Sr_No', 'Sr_Number', 'Serial_Number', 'SRNO',
+        'अनु क्र.', 'अनु क्र', 'अनु क्र .', 'अनु.क्र.', 'अनु क्रमांक', 'Serial Number', 'Serial No', 'Sr No', 'Sr Number', 'क्रमांक'
+        ])?.trim();
+      }
+
+      // Get House Number - DIRECT ACCESS FIRST
+      let houseNumber = '';
+      if (row['House_No'] !== undefined && row['House_No'] !== null) {
+        houseNumber = String(row['House_No']).trim();
+      }
+      if (!houseNumber) {
+        houseNumber = getField(row, [
+          'House_No', 'House_Number', 'HouseNo', 'House No', 'House no',
+          'घर क्र.', 'घर क्र', 'घर क्र .', 'House Number', 'घर नंबर', 'घर क्रमांक'
+        ]);
+      }
+
+      // EXCEL FILE STRUCTURE: SR_NO, House_No, Name_Mr, Gender_Mr, Age, Epic_id, Mobile_No, Name_En, Gender_En
+      // IMPORTANT: Check Name_En and Name_Mr FIRST - these are the exact column names
+      
+      // Get English name - DIRECT ACCESS FIRST (Excel has exact column Name_En)
+      let nameEnglish = '';
+      if (row['Name_En'] !== undefined && row['Name_En'] !== null) {
+        nameEnglish = String(row['Name_En']).trim();
+        if (index === 0) console.log('✅ Direct access: row["Name_En"] =', nameEnglish);
+      }
+      
+      // If not found, try getField with variations
+      if (!nameEnglish) {
+        nameEnglish = getField(row, [
+          'Name_En', 'Name En', 'Name_English', 'NameEnglish', 'NameEn', 'Name English'
+        ]);
+        if (index === 0 && nameEnglish) console.log('✅ getField found Name_En:', nameEnglish);
+      }
+      if (index === 0 && !nameEnglish) console.log('❌ Name_En NOT FOUND');
+      
+      // Get Marathi name - DIRECT ACCESS FIRST (Excel has exact column Name_Mr)
+      let nameMarathi = '';
+      if (row['Name_Mr'] !== undefined && row['Name_Mr'] !== null) {
+        nameMarathi = String(row['Name_Mr']).trim();
+        if (index === 0) console.log('✅ Direct access: row["Name_Mr"] =', nameMarathi);
+      }
+      
+      // If not found, try getField with variations
+      if (!nameMarathi) {
+        nameMarathi = getField(row, [
+          'Name_Mr', 'Name Mr', 'Name_Marathi', 'NameMarathi', 'NameMr', 'Name Marathi'
+        ]);
+        if (index === 0 && nameMarathi) console.log('✅ getField found Name_Mr:', nameMarathi);
+      }
+      if (index === 0 && !nameMarathi) console.log('❌ Name_Mr NOT FOUND');
+      
+      // Only if Name_En and Name_Mr are not found, try other field names
+      // But do NOT check generic 'नाव' or 'Name' if we already have Name_En or Name_Mr
+      // This prevents Marathi from going into name field incorrectly
+      
+      // Check if Name_En field actually exists in Excel (even if empty)
+      const nameEnFieldExists = Object.keys(row).some(key => {
+        const keyNormalized = key.toLowerCase().trim().replace(/[\s_]/g, '');
+        return keyNormalized === 'nameen' || keyNormalized === 'name_en';
+      });
+      
+      // DON'T check generic fields if Name_En column exists in Excel
+      // Excel file has Name_En column, so we should only use that
+      // Generic fields check only if Name_En column doesn't exist at all
+
+      // Check if Name_Mr field exists in Excel
+      const nameMrFieldExists = Object.keys(row).some(key => {
+        const keyNormalized = key.toLowerCase().trim().replace(/[\s_]/g, '');
+        return keyNormalized === 'namemr' || keyNormalized === 'name_mr';
+      });
+      
+      // DON'T check generic Marathi fields if Name_Mr column exists in Excel
+      // Excel file has Name_Mr column, so we should only use that
+
+      // Process name - NO TRANSLITERATION, direct mapping
+      let name, name_mr;
+      
+      // Check if values are actually present (not just empty strings)
+      const hasEnglish = nameEnglish && String(nameEnglish).trim() !== '';
+      const hasMarathi = nameMarathi && String(nameMarathi).trim() !== '';
+      
+      if (index === 0) {
+        console.log('\n=== NAME PROCESSING DEBUG ===');
+        console.log('nameEnglish (raw):', JSON.stringify(nameEnglish));
+        console.log('nameMarathi (raw):', JSON.stringify(nameMarathi));
+        console.log('hasEnglish:', hasEnglish);
+        console.log('hasMarathi:', hasMarathi);
+      }
+      
+      // CRITICAL LOGIC FOR EXCEL FILE STRUCTURE:
+      // Excel has: Name_En, Name_Mr, Gender_En, Gender_Mr columns
+      // 1. Always use Name_En for name (even if empty in some rows)
+      // 2. Always use Name_Mr for name_mr
+      // 3. Don't mix them up
+      
+      if (hasEnglish) {
+        // We have English name from Name_En field
+        name = String(nameEnglish).trim();
+        if (index === 0) console.log('✅ Setting name from Name_En:', name);
+      } else {
+        // Name_En is empty - keep name empty, don't use Marathi
+        // This is correct because Name_En field exists in Excel (just empty for this row)
+        name = '';
+        if (index === 0) console.log('⚠️ Name_En is empty, keeping name empty');
+      }
+      
+      // Always put Marathi in name_mr if available
+      if (hasMarathi) {
+        name_mr = String(nameMarathi).trim();
+        if (index === 0) console.log('✅ Setting name_mr from Name_Mr:', name_mr);
+      } else {
+        name_mr = '';
+        if (index === 0) console.log('⚠️ Name_Mr is empty, keeping name_mr empty');
+      }
+
+      // If no name at all (both empty), use Unknown for validation
+      if (!name || name.trim() === '') {
+        if (!hasMarathi) {
+          name = `Unknown_${index}`;
+          if (index === 0) console.log('⚠️ Both empty, setting name to Unknown');
+        }
+      }
+      
+      if (index === 0) {
+        console.log('Final name:', JSON.stringify(name));
+        console.log('Final name_mr:', JSON.stringify(name_mr));
+        console.log('============================\n');
+      }
+
+      // Process gender - check Gender_En first (EXACT column name from Excel)
+      
+      // Check if Gender_En field actually exists in Excel (even if empty)
+      const genderEnFieldExists = Object.keys(row).some(key => {
+        const keyNormalized = key.toLowerCase().trim().replace(/[\s_]/g, '');
+        return keyNormalized === 'genderen' || keyNormalized === 'gender_en';
+      });
+      
+      // Get English gender - DIRECT ACCESS FIRST (Excel has exact column Gender_En)
+      let genderEnglish = '';
+      if (row['Gender_En'] !== undefined && row['Gender_En'] !== null) {
+        genderEnglish = String(row['Gender_En']).trim();
+      }
+      
+      // If not found, try getField with variations
+      if (!genderEnglish) {
+        genderEnglish = getField(row, [
+          'Gender_En', 'Gender En', 'Gender_English', 'GenderEnglish', 'GenderEn', 'Gender English'
+        ]);
+      }
+      
+      // Get Marathi gender - DIRECT ACCESS FIRST (Excel has exact column Gender_Mr)
+      let genderMarathi = '';
+      if (row['Gender_Mr'] !== undefined && row['Gender_Mr'] !== null) {
+        genderMarathi = String(row['Gender_Mr']).trim();
+      }
+      
+      // If not found, try getField with variations
+      if (!genderMarathi) {
+        genderMarathi = getField(row, [
+          'Gender_Mr', 'Gender Mr', 'Gender_Marathi', 'GenderMarathi', 'GenderMr', 'Gender Marathi'
+        ]);
+      }
+      
+      // Check if Gender_Mr field exists in Excel
+      const genderMrFieldExists = Object.keys(row).some(key => {
+        const keyNormalized = key.toLowerCase().trim().replace(/[\s_]/g, '');
+        return keyNormalized === 'gendermr' || keyNormalized === 'gender_mr';
+      });
+      
+      // DON'T check generic fields if Gender_En/Gender_Mr columns exist in Excel
+      // Excel file has these columns, so we should only use those
+      
+      let gender, gender_mr;
+      
+      // Check if values are actually present
+      const hasGenderEnglish = genderEnglish && String(genderEnglish).trim() !== '';
+      const hasGenderMarathi = genderMarathi && String(genderMarathi).trim() !== '';
+      
+      // CRITICAL LOGIC (same as name):
+      // Excel has: Gender_En, Gender_Mr columns
+      // 1. Always use Gender_En for gender (even if empty in some rows)
+      // 2. Always use Gender_Mr for gender_mr
+      // 3. Don't mix them up
+      
+      if (hasGenderEnglish) {
+        // We have English gender from Gender_En field
+        gender = String(genderEnglish).trim();
+      } else {
+        // Gender_En is empty - keep gender empty, don't use Marathi
+        // This is correct because Gender_En field exists in Excel (just empty for this row)
+        gender = '';
+      }
+      
+      // Always put Marathi in gender_mr if available
+      if (hasGenderMarathi) {
+        gender_mr = String(genderMarathi).trim();
+      } else {
+        gender_mr = '';
+      }
+
+      const ageRaw = getField(row, [
+        'Age', 'वय'
       ]);
       const age = parseInt(ageRaw || 0) || 0;
 
-      const voterIdCard = getVal(row, [
-        // Marathi/Hindi variants
-        'मतदान कार्ड क्र.', 'मतदान कार्ड क्र', 'मतदान कार्ड क्र .', 'मतदान कार्ड क्रमांक', 'मतदार ओळखपत्र', 'मतदार ओळखपत्र क्र.', 'मतदार ओळख क्रमांक',
+      // Get EPIC ID - DIRECT ACCESS FIRST
+      let voterIdCard = '';
+      if (row['Epic_id'] !== undefined && row['Epic_id'] !== null) {
+        voterIdCard = String(row['Epic_id']).trim();
+      }
+      if (!voterIdCard) {
+        voterIdCard = getField(row, [
+          'Epic_id', 'Epic_ID', 'EpicId', 'EPIC_ID', 'Epic Id', 'Epic id', 'EPICID',
         // English variants
         'Voter ID', 'Voter ID No', 'Voter ID Number', 'Voter Id Card', 'Voter Id Card No', 'Voter Card Number', 'VoterCard No', 'VoterID',
-        'EPIC No', 'EPIC Number', 'EPIC', 'Elector Photo Identity Card No', 'ID Card No', 'IDCard No', 'ID Card Number'
-      ]);
+          'EPIC No', 'EPIC Number', 'EPIC', 'Elector Photo Identity Card No', 'ID Card No', 'IDCard No', 'ID Card Number', 'Voter_ID',
+          // Marathi/Hindi variants
+          'मतदान कार्ड क्र.', 'मतदान कार्ड क्र', 'मतदान कार्ड क्र .', 'मतदान कार्ड क्रमांक', 'मतदार ओळखपत्र', 'मतदार ओळखपत्र क्र.', 'मतदार ओळख क्रमांक'
+        ])?.trim();
+      }
 
-      const mobileNumber = getVal(row, [
-        'मोबाईल नं.', 'मोबाईल नं .', 'मोबाईल', 'Mobile Number', 'Mobile No', 'Phone', 'Phone Number', 'Contact', 'Contact Number'
-      ]);
+      // Get Mobile Number - DIRECT ACCESS FIRST
+      let mobileNumber = '';
+      if (row['Mobile_No'] !== undefined && row['Mobile_No'] !== null) {
+        mobileNumber = String(row['Mobile_No']).trim();
+      }
+      if (!mobileNumber) {
+        mobileNumber = getField(row, [
+          'Mobile_No', 'Mobile_Number', 'MobileNo', 'Mobile No', 'Mobile no',
+          'मोबाईल नं.', 'मोबाईल नं .', 'मोबाईल', 'Mobile Number', 'Phone', 'Phone Number', 'Contact', 'Contact Number'
+        ]);
+      }
 
-      const transformedRow = { serialNumber, houseNumber, name, gender, age, voterIdCard, mobileNumber };
+      const transformedRow = { 
+        serialNumber, 
+        houseNumber, 
+        name, 
+        name_mr, 
+        gender, 
+        gender_mr, 
+        age, 
+        voterIdCard, 
+        mobileNumber 
+      };
 
-      // Validate required field (name)
-      if (!transformedRow.name || /^Unknown_/.test(transformedRow.name)) {
-        console.warn(`Row ${index}: Missing valid name, skipping`);
+      // Debug first row
+      if (index === 0) {
+        console.log('\n=== TRANSFORMED ROW DEBUG ===');
+        console.log('serialNumber:', serialNumber);
+        console.log('houseNumber:', houseNumber);
+        console.log('name:', name);
+        console.log('name_mr:', name_mr);
+        console.log('gender:', gender);
+        console.log('gender_mr:', gender_mr);
+        console.log('age:', age);
+        console.log('voterIdCard:', voterIdCard);
+        console.log('mobileNumber:', mobileNumber);
+        console.log('================================\n');
+      }
+
+      // Validate required field - at least name or name_mr should be present
+      // Don't skip rows if name_mr exists even if name is empty
+      if ((!transformedRow.name || /^Unknown_/.test(transformedRow.name)) && (!transformedRow.name_mr || transformedRow.name_mr.trim() === '')) {
+        console.warn(`Row ${index}: Missing valid name (both name and name_mr empty), skipping`);
         return null;
       }
+      
+      // IMPORTANT: DO NOT overwrite name with name_mr
+      // If Name_En is empty in Excel, name should stay empty, not be replaced with name_mr
+      // This ensures correct separation between English and Marathi fields
 
       return transformedRow;
     }).filter(row => row !== null);
@@ -205,10 +614,18 @@ export const uploadExcelFile = async (req, res) => {
     console.log(`Valid records to insert: ${voterDataArray.length}`);
 
     if (voterDataArray.length === 0) {
-      fs.unlinkSync(req.file.path);
+      // Cleanup uploaded file (only for disk storage)
+      if (!isVercel && req.file.path && fs.existsSync(req.file.path)) {
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch (cleanupError) {
+          console.warn('File cleanup error (non-critical):', cleanupError.message);
+        }
+      }
       return res.status(400).json({
         success: false,
-        message: 'कोई वैध डेटा नहीं मिला (नाम के साथ)',
+        message: 'No valid data found (with name)',
+        message_mr: 'कोई वैध डेटा नहीं मिला (नाम के साथ)',
       });
     }
 
@@ -217,21 +634,29 @@ export const uploadExcelFile = async (req, res) => {
       ordered: false // Continue even if some fail
     });
 
-    // Cleanup uploaded file
-    fs.unlinkSync(req.file.path);
+    // Cleanup uploaded file (only for disk storage, not needed for memory storage)
+    if (!isVercel && req.file.path && fs.existsSync(req.file.path)) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (cleanupError) {
+        console.warn('File cleanup error (non-critical):', cleanupError.message);
+      }
+    }
 
     res.status(201).json({
       success: true,
-      message: `डेटा सफलतापूर्वक अपलोड हो गया (${savedData.length} रिकॉर्ड्स)`,
+      message: `Data uploaded successfully (${savedData.length} records)`,
+      message_mr: `डेटा सफलतापूर्वक अपलोड हो गया (${savedData.length} रिकॉर्ड्स)`,
       count: savedData.length,
       sample: savedData.slice(0, 5),
+      fieldsInfo: fieldsInfo, // Include fields information
     });
 
   } catch (error) {
     console.error('=== UPLOAD ERROR ===', error);
 
-    // Cleanup file if exists
-    if (req.file && fs.existsSync(req.file.path)) {
+    // Cleanup file if exists (only for disk storage)
+    if (req.file && !isVercel && req.file.path && fs.existsSync(req.file.path)) {
       try {
         fs.unlinkSync(req.file.path);
       } catch (cleanupError) {
@@ -241,8 +666,10 @@ export const uploadExcelFile = async (req, res) => {
 
     res.status(500).json({
       success: false,
-      message: 'सर्वर एरर',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'आंतरिक सर्वर त्रुटि',
+      message: 'Server error',
+      message_mr: 'सर्वर एरर',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error',
+      error_mr: process.env.NODE_ENV === 'development' ? error.message : 'आंतरिक सर्वर त्रुटि',
     });
   }
 };
@@ -273,7 +700,8 @@ export const getAllVoters = async (req, res) => {
     console.error('Get voters error:', error);
     res.status(500).json({
       success: false,
-      message: 'सर्वर एरर',
+      message: 'Server error',
+      message_mr: 'सर्वर एरर',
       error: error.message,
     });
   }
@@ -286,7 +714,8 @@ export const getVoterById = async (req, res) => {
     if (!voter) {
       return res.status(404).json({
         success: false,
-        message: 'वोटर नहीं मिला',
+        message: 'Voter not found',
+        message_mr: 'वोटर नहीं मिला',
       });
     }
 
@@ -298,7 +727,8 @@ export const getVoterById = async (req, res) => {
     console.error('Get voter error:', error);
     res.status(500).json({
       success: false,
-      message: 'सर्वर एरर',
+      message: 'Server error',
+      message_mr: 'सर्वर एरर',
       error: error.message,
     });
   }
@@ -310,14 +740,99 @@ export const deleteAllVoters = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: 'सभी डेटा सफलतापूर्वक डिलीट हो गया',
+      message: 'All data deleted successfully',
+      message_mr: 'सभी डेटा सफलतापूर्वक डिलीट हो गया',
       deletedCount: result.deletedCount,
     });
   } catch (error) {
     console.error('Delete error:', error);
     res.status(500).json({
       success: false,
-      message: 'सर्वर एरर',
+      message: 'Server error',
+      message_mr: 'सर्वर एरर',
+      error: error.message,
+    });
+  }
+};
+
+// Search voters by name (supports both English and Marathi)
+// Note: isMarathiText is imported from '../utils/transliteration.js'
+export const searchVoters = async (req, res) => {
+  try {
+    const { query, page = 1, limit = 50 } = req.query;
+
+    if (!query || query.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a search query',
+        message_mr: 'कृपया शोध क्वेरी प्रदान करें',
+      });
+    }
+
+    const searchTerm = query.trim();
+    const isMarathi = isMarathiText(searchTerm);
+    
+    // Search in appropriate field based on language
+    const searchField = isMarathi ? 'name_mr' : 'name';
+    
+    console.log(`Searching for: "${searchTerm}" (${isMarathi ? 'Marathi' : 'English'})`);
+    console.log(`Search field: ${searchField}`);
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    // Case-insensitive partial match search
+    const searchQuery = {
+      [searchField]: { $regex: searchTerm, $options: 'i' }
+    };
+
+    const voters = await VoterData.find(searchQuery)
+      .skip(skip)
+      .limit(parseInt(limit))
+      .sort({ createdAt: -1 });
+
+    const totalCount = await VoterData.countDocuments(searchQuery);
+
+    // Format response - always include both English and Marathi names
+    const formattedData = voters.map(voter => {
+      const voterObj = voter.toObject();
+      
+      // Always return both English and Marathi names
+        return {
+          _id: voterObj._id,
+          serialNumber: voterObj.serialNumber,
+          houseNumber: voterObj.houseNumber,
+        name: voterObj.name, // English name
+        name_mr: voterObj.name_mr || '', // Marathi name
+        gender: voterObj.gender, // English gender
+        gender_mr: voterObj.gender_mr || '', // Marathi gender
+          age: voterObj.age,
+          voterIdCard: voterObj.voterIdCard,
+          mobileNumber: voterObj.mobileNumber,
+          createdAt: voterObj.createdAt,
+          updatedAt: voterObj.updatedAt
+        };
+    });
+
+    res.status(200).json({
+      success: true,
+      message: isMarathi 
+        ? `${totalCount} रिकॉर्ड मिले` 
+        : `Found ${totalCount} records`,
+      searchTerm: searchTerm,
+      searchLanguage: isMarathi ? 'Marathi' : 'English',
+      count: formattedData.length,
+      totalCount: totalCount,
+      currentPage: parseInt(page),
+      totalPages: Math.ceil(totalCount / parseInt(limit)),
+      data: formattedData,
+    });
+
+  } catch (error) {
+    console.error('Search error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      message_mr: 'सर्वर एरर',
       error: error.message,
     });
   }

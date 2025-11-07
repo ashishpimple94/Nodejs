@@ -1,0 +1,22 @@
+# Ignore files for Vercel deployment
+node_modules/
+uploads/
+*.log
+.env
+.env.local
+.git/
+.vscode/
+*.md
+test-*.js
+*-test.js
+check-*.js
+debug-*.js
+fix-*.js
+generate*.js
+migrate-*.js
+quick-*.js
+show-*.js
+get-*.js
+sample-*.xlsx
+test-data/
+

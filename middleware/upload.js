@@ -3,20 +3,27 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = 'uploads/';
-    // Create directory if it doesn't exist
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
-    }
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueFilename = `${Date.now()}-${file.originalname}`;
-    cb(null, uniqueFilename);
-  },
-});
+// Check if we're in Vercel/serverless environment
+const isVercel = process.env.VERCEL === '1' || process.env.VERCEL_ENV;
+
+// Use memory storage for Vercel (serverless), disk storage for local dev
+const storage = isVercel
+  ? multer.memoryStorage() // Vercel serverless: use memory storage
+  : multer.diskStorage({
+      // Local development: use disk storage
+      destination: (req, file, cb) => {
+        const uploadDir = 'uploads/';
+        // Create directory if it doesn't exist
+        if (!fs.existsSync(uploadDir)) {
+          fs.mkdirSync(uploadDir, { recursive: true });
+        }
+        cb(null, uploadDir);
+      },
+      filename: (req, file, cb) => {
+        const uniqueFilename = `${Date.now()}-${file.originalname}`;
+        cb(null, uniqueFilename);
+      },
+    });
 
 const fileFilter = (req, file, cb) => {
   console.log('File received:', file.originalname, file.mimetype);
@@ -43,4 +50,6 @@ const upload = multer({
   }
 });
 
+// Export storage type for controller to know how to handle files
+export { isVercel };
 export default upload;

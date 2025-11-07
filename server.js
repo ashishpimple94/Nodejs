@@ -15,8 +15,8 @@ connectDB();
 // Initialize Express app
 const app = express();
 
-// Create uploads directory if it doesn't exist
-if (!fs.existsSync('uploads')) {
+// Create uploads directory if it doesn't exist (only for local dev, not needed for Vercel)
+if (process.env.VERCEL !== '1' && !fs.existsSync('uploads')) {
   fs.mkdirSync('uploads');
 }
 
@@ -61,16 +61,21 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Start server
-const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-  console.log(`
+// Export app for Vercel serverless functions
+// For local development, start the server
+if (process.env.VERCEL !== '1') {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`
 ╔════════════════════════════════════════════╗
 ║   🚀 Server running on port ${PORT}        ║
 ║   📁 Excel Upload API is ready!           ║
 ║   🔗 http://localhost:${PORT}              ║
 ╚════════════════════════════════════════════╝
-  `);
-});
+    `);
+  });
+}
+
+// Export for Vercel
+export default app;
 
