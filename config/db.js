@@ -10,12 +10,18 @@ if (!cached) {
 const connectDB = async () => {
   // Check if MONGODB_URI is set
   if (!process.env.MONGODB_URI) {
-    console.error('MONGODB_URI is not set in environment variables');
-    throw new Error('MONGODB_URI is not set');
+    console.error('❌ MONGODB_URI is not set in environment variables');
+    throw new Error('MONGODB_URI is not set in environment variables');
   }
+
+  // Log connection attempt (without exposing password)
+  const uriParts = process.env.MONGODB_URI.split('@');
+  const sanitizedUri = uriParts.length > 1 ? `mongodb+srv://***@${uriParts[1]}` : 'mongodb+srv://***';
+  console.log('🔄 Attempting MongoDB connection to:', sanitizedUri);
 
   // If connection already exists and is ready, return it
   if (cached.conn && mongoose.connection.readyState === 1) {
+    console.log('✅ Using existing MongoDB connection');
     return cached.conn;
   }
 
@@ -23,9 +29,9 @@ const connectDB = async () => {
   if (!cached.promise) {
     const opts = {
       bufferCommands: true, // Buffer commands until connection is ready (important for serverless)
-      serverSelectionTimeoutMS: 10000, // How long to try selecting a server (increased for serverless)
+      serverSelectionTimeoutMS: 20000, // Increased for serverless (20 seconds)
       socketTimeoutMS: 45000, // How long to wait for socket timeout
-      connectTimeoutMS: 15000, // How long to wait for initial connection (increased for serverless)
+      connectTimeoutMS: 20000, // Increased for serverless (20 seconds)
       maxPoolSize: 1, // For serverless, use 1 connection to avoid connection pool issues
       minPoolSize: 0, // Allow 0 connections when idle (serverless friendly)
       maxIdleTimeMS: 30000, // Close connections after 30 seconds of inactivity
@@ -33,12 +39,25 @@ const connectDB = async () => {
       w: 'majority',
     };
 
+    console.log('📋 Connection options:', {
+      serverSelectionTimeoutMS: opts.serverSelectionTimeoutMS,
+      connectTimeoutMS: opts.connectTimeoutMS,
+      maxPoolSize: opts.maxPoolSize
+    });
+
     cached.promise = mongoose.connect(process.env.MONGODB_URI, opts).then((mongoose) => {
-      console.log('MongoDB Connected:', mongoose.connection.host);
+      console.log('✅ MongoDB Connected successfully to:', mongoose.connection.host);
+      console.log('📊 Database:', mongoose.connection.name);
+      console.log('🔌 Ready state:', mongoose.connection.readyState);
       cached.conn = mongoose;
       return mongoose;
     }).catch((error) => {
-      console.error('MongoDB Connection Error:', error.message);
+      console.error('❌ MongoDB Connection Error:', error.name);
+      console.error('📋 Error message:', error.message);
+      console.error('🔢 Error code:', error.code);
+      if (error.reason) {
+        console.error('📋 Error reason:', error.reason);
+      }
       cached.promise = null;
       cached.conn = null;
       throw error;
@@ -49,14 +68,27 @@ const connectDB = async () => {
     const conn = await cached.promise;
     // Wait for connection to be ready
     if (conn.connection.readyState !== 1) {
+      console.log('⏳ Waiting for connection to be ready...');
       await new Promise((resolve, reject) => {
-        conn.connection.once('connected', resolve);
-        conn.connection.once('error', reject);
-        setTimeout(() => reject(new Error('Connection timeout')), 10000);
+        const timeout = setTimeout(() => {
+          reject(new Error('Connection timeout: Database did not become ready within 15 seconds'));
+        }, 15000);
+        
+        conn.connection.once('connected', () => {
+          clearTimeout(timeout);
+          console.log('✅ Connection ready');
+          resolve();
+        });
+        
+        conn.connection.once('error', (err) => {
+          clearTimeout(timeout);
+          reject(err);
+        });
       });
     }
     return conn;
   } catch (e) {
+    console.error('❌ Connection promise failed:', e.message);
     cached.promise = null;
     cached.conn = null;
     throw e;

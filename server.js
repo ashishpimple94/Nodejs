@@ -15,25 +15,71 @@ const app = express();
 
 // Middleware to ensure MongoDB connection before handling requests
 app.use(async (req, res, next) => {
-  // Skip connection check for health endpoint
+  // Skip connection check for health endpoint and root
   if (req.path === '/health' || req.path === '/') {
     return next();
   }
 
   try {
+    // Check if MONGODB_URI is set
+    if (!process.env.MONGODB_URI) {
+      console.error('❌ MONGODB_URI is not set in environment variables');
+      return res.status(503).json({
+        success: false,
+        message: 'Database configuration error',
+        message_mr: 'डेटाबेस कॉन्फ़िगरेशन त्रुटि',
+        error: 'MONGODB_URI environment variable is not set',
+        hint: 'Please set MONGODB_URI in Vercel environment variables'
+      });
+    }
+
     // Ensure MongoDB connection is ready
     if (mongoose.connection.readyState !== 1) {
-      console.log('MongoDB not connected, attempting connection...');
-      await connectDB();
+      console.log('🔄 MongoDB not connected, attempting connection...');
+      console.log('📍 Connection state:', mongoose.connection.readyState);
+      console.log('🔗 MongoDB URI present:', !!process.env.MONGODB_URI);
+      
+      try {
+        await connectDB();
+        console.log('✅ MongoDB connected successfully');
+      } catch (connError) {
+        console.error('❌ MongoDB connection failed:', connError.message);
+        console.error('📋 Error details:', {
+          name: connError.name,
+          code: connError.code,
+          message: connError.message
+        });
+        throw connError;
+      }
+    } else {
+      console.log('✅ MongoDB already connected');
     }
     next();
   } catch (error) {
-    console.error('MongoDB connection error in middleware:', error);
+    console.error('❌ MongoDB connection error in middleware:', error);
+    console.error('📋 Full error:', JSON.stringify(error, Object.getOwnPropertyNames(error)));
+    
+    // Provide helpful error messages
+    let errorMessage = 'Database connection failed';
+    let errorDetails = error.message || 'Unknown error';
+    
+    if (error.message && error.message.includes('authentication failed')) {
+      errorMessage = 'Database authentication failed';
+      errorDetails = 'Invalid username or password. Please check MONGODB_URI.';
+    } else if (error.message && error.message.includes('ENOTFOUND')) {
+      errorMessage = 'Database server not found';
+      errorDetails = 'Cannot reach MongoDB server. Check your connection string.';
+    } else if (error.message && error.message.includes('timeout')) {
+      errorMessage = 'Connection timeout';
+      errorDetails = 'Connection to database timed out. Check network access in MongoDB Atlas.';
+    }
+    
     return res.status(503).json({
       success: false,
-      message: 'Database connection failed',
+      message: errorMessage,
       message_mr: 'डेटाबेस कनेक्शन विफल',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Service temporarily unavailable',
+      error: errorDetails,
+      hint: process.env.VERCEL ? 'Check Vercel environment variables and MongoDB Atlas network access' : 'Check your .env file'
     });
   }
 });
@@ -64,12 +110,43 @@ app.get('/', (req, res) => {
   });
 });
 
-// Health check endpoint
-app.get('/health', (req, res) => {
+// Health check endpoint with detailed MongoDB status
+app.get('/health', async (req, res) => {
+  const connectionState = mongoose.connection.readyState;
+  const stateMap = {
+    0: 'disconnected',
+    1: 'connected',
+    2: 'connecting',
+    3: 'disconnecting'
+  };
+
+  let mongodbStatus = {
+    state: stateMap[connectionState] || 'unknown',
+    readyState: connectionState,
+    host: mongoose.connection.host || 'N/A',
+    name: mongoose.connection.name || 'N/A',
+    hasUri: !!process.env.MONGODB_URI
+  };
+
+  // Try to connect if not connected
+  if (connectionState !== 1 && process.env.MONGODB_URI) {
+    try {
+      await connectDB();
+      mongodbStatus.state = 'connected';
+      mongodbStatus.readyState = mongoose.connection.readyState;
+      mongodbStatus.host = mongoose.connection.host;
+      mongodbStatus.name = mongoose.connection.name;
+    } catch (error) {
+      mongodbStatus.error = error.message;
+      mongodbStatus.state = 'error';
+    }
+  }
+
   res.json({
-    status: 'ok',
+    status: connectionState === 1 ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),
-    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    environment: process.env.VERCEL ? 'production' : 'development',
+    mongodb: mongodbStatus
   });
 });
 
