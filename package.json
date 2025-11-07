@@ -1,5 +1,5 @@
 {
-  "name": "excel-upload-api",
+  "name": "voterlist-api",
   "version": "1.0.0",
   "description": "Excel file upload and data management API with Node.js, Express and MongoDB",
   "main": "server.js",
