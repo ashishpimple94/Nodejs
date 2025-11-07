@@ -6,7 +6,11 @@ uploads/
 .env.local
 .git/
 .vscode/
-*.md
+
+# Documentation (optional - can keep if needed)
+# *.md
+
+# Test and utility scripts
 test-*.js
 *-test.js
 check-*.js
@@ -17,6 +21,23 @@ migrate-*.js
 quick-*.js
 show-*.js
 get-*.js
-sample-*.xlsx
+test-excel-*.js
+test-actual-*.js
+test-search.js
+test-transliteration.js
+test-upload.md
 test-data/
+sample-*.xlsx
+api-tests.md
+
+# Keep essential files
+# server.js
+# controllers/
+# routes/
+# models/
+# config/
+# middleware/
+# utils/
+# package.json
+# vercel.json
 

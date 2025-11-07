@@ -10,6 +10,7 @@ node_modules/
 uploads/
 *.xlsx
 *.xls
+!test-data/
 
 # Logs
 *.log
@@ -28,8 +29,8 @@ Thumbs.db
 *.swo
 *~
 
-# Test files (keep structure, ignore generated)
-test-data/
+# Test and utility files (keep in git but ignore in Vercel)
+# These are useful for development but not needed in production
 
 # Build files
 dist/
@@ -38,3 +39,6 @@ build/
 # Temporary files
 *.tmp
 *.temp
+
+# Vercel
+.vercel

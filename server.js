@@ -3,14 +3,21 @@ import dotenv from 'dotenv';
 import cors from 'cors';
 import fs from 'fs';
 import multer from 'multer';
+import mongoose from 'mongoose';
 import connectDB from './config/db.js';
 import voterRoutes from './routes/voterRoutes.js';
 
 // Load environment variables
 dotenv.config();
 
-// Connect to MongoDB
-connectDB();
+// Connect to MongoDB (with error handling for serverless)
+connectDB().catch((error) => {
+  console.error('Failed to connect to MongoDB:', error);
+  // In serverless, don't exit - let the function handle the error
+  if (process.env.VERCEL !== '1') {
+    process.exit(1);
+  }
+});
 
 // Initialize Express app
 const app = express();
@@ -29,12 +36,24 @@ app.use(express.urlencoded({ extended: true }));
 app.get('/', (req, res) => {
   res.json({
     message: 'Excel Upload API',
+    status: 'running',
+    environment: process.env.VERCEL ? 'production' : 'development',
     endpoints: {
       uploadExcel: 'POST /api/voters/upload',
       getAllVoters: 'GET /api/voters',
       getVoterById: 'GET /api/voters/:id',
+      searchVoters: 'GET /api/voters/search?query=...',
       deleteAllVoters: 'DELETE /api/voters',
     },
+  });
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
   });
 });
 
