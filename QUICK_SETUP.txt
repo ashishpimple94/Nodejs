@@ -1,0 +1,32 @@
+═══════════════════════════════════════════════════════════════
+🚀 QUICK SETUP - Vercel Environment Variable
+═══════════════════════════════════════════════════════════════
+
+STEP 1: Go to Vercel Dashboard
+   → https://vercel.com/dashboard
+   → Click on your project
+
+STEP 2: Add Environment Variable
+   → Settings → Environment Variables
+   → Click "Add New"
+   
+   Key: MONGODB_URI
+   
+   Value: mongodb+srv://hosteluser:hostuser@cluster0.ezzkjmw.mongodb.net/voterlist?retryWrites=true&w=majority&appName=Cluster0
+   
+   Environment: ✅ Production ✅ Preview ✅ Development
+   
+   → Click "Save"
+
+STEP 3: Redeploy (VERY IMPORTANT!)
+   → Deployments tab
+   → Latest deployment → Click "Redeploy"
+   → Wait for deployment to complete
+
+STEP 4: Test
+   → Visit: https://your-project.vercel.app/health
+   → Should show: "mongodb": { "hasUri": true, "state": "connected" }
+
+═══════════════════════════════════════════════════════════════
+⚠️  IMPORTANT: Must redeploy after adding environment variable!
+═══════════════════════════════════════════════════════════════
