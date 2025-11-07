@@ -629,10 +629,74 @@ export const uploadExcelFile = async (req, res) => {
       });
     }
 
-    // Insert data in bulk
-    const savedData = await VoterData.insertMany(voterDataArray, {
-      ordered: false // Continue even if some fail
-    });
+    // Insert data in batches to avoid memory issues
+    const BATCH_SIZE = 1000; // Process 1000 records at a time
+    let totalInserted = 0;
+    let totalErrors = 0;
+    const errors = [];
+
+    console.log(`📦 Processing ${voterDataArray.length} records in batches of ${BATCH_SIZE}...`);
+
+    // Process in batches
+    for (let i = 0; i < voterDataArray.length; i += BATCH_SIZE) {
+      const batch = voterDataArray.slice(i, i + BATCH_SIZE);
+      const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
+      const totalBatches = Math.ceil(voterDataArray.length / BATCH_SIZE);
+
+      try {
+        console.log(`📦 Processing batch ${batchNumber}/${totalBatches} (${batch.length} records)...`);
+        
+        // Insert batch
+        const batchResult = await VoterData.insertMany(batch, {
+          ordered: false // Continue even if some fail
+        });
+
+        totalInserted += batchResult.length;
+        console.log(`✅ Batch ${batchNumber} inserted: ${batchResult.length} records`);
+        
+        // Force garbage collection hint (if available)
+        if (global.gc) {
+          global.gc();
+        }
+      } catch (batchError) {
+        console.error(`❌ Batch ${batchNumber} error:`, batchError.message);
+        
+        // If batch fails, try inserting individually
+        if (batchError.writeErrors) {
+          for (const writeError of batchError.writeErrors) {
+            errors.push({
+              index: i + writeError.index,
+              error: writeError.errmsg
+            });
+            totalErrors++;
+          }
+        } else {
+          // Try individual inserts for this batch
+          for (let j = 0; j < batch.length; j++) {
+            try {
+              await VoterData.create(batch[j]);
+              totalInserted++;
+            } catch (individualError) {
+              errors.push({
+                index: i + j,
+                error: individualError.message
+              });
+              totalErrors++;
+            }
+          }
+        }
+      }
+
+      // Small delay between batches to prevent overwhelming the system
+      if (i + BATCH_SIZE < voterDataArray.length) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+
+    console.log(`✅ Total inserted: ${totalInserted}, Errors: ${totalErrors}`);
+
+    // Prepare response
+    const savedData = voterDataArray.slice(0, Math.min(5, totalInserted)); // Sample for response
 
     // Cleanup uploaded file (only for disk storage, not needed for memory storage)
     if (!isVercel && req.file.path && fs.existsSync(req.file.path)) {
@@ -645,10 +709,13 @@ export const uploadExcelFile = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: `Data uploaded successfully (${savedData.length} records)`,
-      message_mr: `डेटा सफलतापूर्वक अपलोड हो गया (${savedData.length} रिकॉर्ड्स)`,
-      count: savedData.length,
-      sample: savedData.slice(0, 5),
+      message: `Data uploaded successfully (${totalInserted} records inserted)`,
+      message_mr: `डेटा सफलतापूर्वक अपलोड हो गया (${totalInserted} रिकॉर्ड्स)`,
+      count: totalInserted,
+      totalProcessed: voterDataArray.length,
+      errors: totalErrors,
+      errorDetails: errors.length > 0 ? errors.slice(0, 10) : [], // First 10 errors
+      sample: savedData,
       fieldsInfo: fieldsInfo, // Include fields information
     });
 
