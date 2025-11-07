@@ -1,0 +1,14 @@
+MongoDB Connection String for Vercel Environment Variables:
+
+MONGODB_URI=mongodb+srv://hosteluser:hostuser@cluster0.ezzkjmw.mongodb.net/voterlist?retryWrites=true&w=majority&appName=Cluster0
+
+Instructions:
+1. Go to Vercel Dashboard → Your Project → Settings → Environment Variables
+2. Add new variable:
+   - Key: MONGODB_URI
+   - Value: (copy the string above)
+3. Select all environments (Production, Preview, Development)
+4. Click Save
+5. Redeploy your project
+
+Note: Replace 'voterlist' with your actual database name if different.
