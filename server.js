@@ -10,17 +10,33 @@ import voterRoutes from './routes/voterRoutes.js';
 // Load environment variables
 dotenv.config();
 
-// Connect to MongoDB (with error handling for serverless)
-connectDB().catch((error) => {
-  console.error('Failed to connect to MongoDB:', error);
-  // In serverless, don't exit - let the function handle the error
-  if (process.env.VERCEL !== '1') {
-    process.exit(1);
-  }
-});
-
 // Initialize Express app
 const app = express();
+
+// Middleware to ensure MongoDB connection before handling requests
+app.use(async (req, res, next) => {
+  // Skip connection check for health endpoint
+  if (req.path === '/health' || req.path === '/') {
+    return next();
+  }
+
+  try {
+    // Ensure MongoDB connection is ready
+    if (mongoose.connection.readyState !== 1) {
+      console.log('MongoDB not connected, attempting connection...');
+      await connectDB();
+    }
+    next();
+  } catch (error) {
+    console.error('MongoDB connection error in middleware:', error);
+    return res.status(503).json({
+      success: false,
+      message: 'Database connection failed',
+      message_mr: 'डेटाबेस कनेक्शन विफल',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Service temporarily unavailable',
+    });
+  }
+});
 
 // Create uploads directory if it doesn't exist (only for local dev, not needed for Vercel)
 if (process.env.VERCEL !== '1' && !fs.existsSync('uploads')) {
